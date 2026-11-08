@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [nx2]
   push:
-    branches: [nx2]
+    branches: [nx2, amd-mesh-fallback]
   workflow_dispatch:
 
 permissions:
@@ -149,7 +149,8 @@ jobs:
   windows-clang-cl:
     name: Windows clang-cl production build and tests
     needs: changes
-    if: needs.changes.outputs.build == 'true'
+    # The fork's AMD branch gets its Windows build from release-binaries.
+    if: needs.changes.outputs.build == 'true' && github.ref != 'refs/heads/amd-mesh-fallback'
     runs-on: windows-2022
     timeout-minutes: 120
     # ccache rather than sccache: sccache has no direct mode for clang-cl, so every hit still ran the
