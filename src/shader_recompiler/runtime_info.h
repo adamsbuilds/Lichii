@@ -94,6 +94,9 @@ struct RuntimeInfo {
     std::bitset<32> noperspective_outputs{};
     /// Fragment stage: the previous stage writes noperspective_outputs (not a mesh program).
     bool scaled_noperspective_inputs{};
+    /// Fragment stage after an emulated mesh program: per-primitive generics, which the
+    /// emulation's vertex shader writes on every vertex of the primitive, read flat.
+    std::bitset<32> flat_generics{};
     std::map<IR::Attribute, IR::Attribute> previous_stage_legacy_stores_mapping;
 
     bool convert_depth_mode{};

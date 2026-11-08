@@ -188,10 +188,14 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
         info.previous_stage_stores.mask.set();
     }
     if (previous_program && previous_program->stage == Shader::Stage::Mesh) {
+        // Without VK_EXT_mesh_shader the mesh program is emulated and its vertex shader writes
+        // the per-primitive generics on each vertex, so the pixel program reads them flat.
+        auto& generics{device.IsExtMeshShaderSupported() ? info.per_primitive_generics
+                                                         : info.flat_generics};
         for (const u32 line : previous_program->mesh.primitive_lines) {
             const auto attribute{static_cast<Shader::IR::Attribute>(line)};
             if (Shader::IR::IsGeneric(attribute)) {
-                info.per_primitive_generics.set(Shader::IR::GenericAttributeIndex(attribute));
+                generics.set(Shader::IR::GenericAttributeIndex(attribute));
             }
         }
     }
@@ -1910,7 +1914,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
     }
     // Mesh emulation without VK_EXT_mesh_shader (prototype): a mesh program, after an optional
-    // task program, drawing triangles without per-primitive outputs, before a pixel program only.
+    // task program, drawing points, lines or triangles with per-primitive outputs only in
+    // generics, before a pixel program only.
     std::optional<MeshEmulationSetup> mesh_emulation;
     size_t mesh_index{};
     if (mesh_unsupported) {
@@ -1926,9 +1931,17 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         bool eligible{mesh_index != 0 && (mesh_index == 1 || has_task) &&
                       layer_source_program == nullptr};
         const Shader::IR::Program& mesh{programs[mesh_index]};
-        eligible = eligible && mesh.mesh.topology == 4 && mesh.mesh.primitive_lines.empty() &&
-                   !mesh.mesh.vertex_lines.empty() && mesh.mesh.max_vertices != 0 &&
-                   mesh.mesh.max_primitives != 0;
+        // Points, lines and triangles; per-primitive values only as generics (the emulation's
+        // vertex shader has no per-primitive layer, viewport or primitive id).
+        const bool generic_primitive_lines{std::ranges::all_of(
+            mesh.mesh.primitive_lines, [](u32 line) {
+                return Shader::IR::IsGeneric(static_cast<Shader::IR::Attribute>(line));
+            })};
+        eligible = eligible &&
+                   (mesh.mesh.topology == 0 || mesh.mesh.topology == 1 ||
+                    mesh.mesh.topology == 4) &&
+                   generic_primitive_lines && !mesh.mesh.vertex_lines.empty() &&
+                   mesh.mesh.max_vertices != 0 && mesh.mesh.max_primitives != 0;
         for (size_t index = 1; index < Maxwell::MaxShaderProgram && eligible; ++index) {
             const bool emulated{index == mesh_index || (has_task && index == 1)};
             eligible = emulated || key.unique_hashes[index] == 0 ||
@@ -1992,6 +2005,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
         mesh_emulation->block_words = Shader::Backend::SPIRV::MeshEmulationBlockWords(mesh.mesh);
         mesh_emulation->max_primitives = mesh.mesh.max_primitives;
+        mesh_emulation->primitive_vertices = mesh.mesh.PrimitiveVertices();
+        mesh_emulation->primitive_words =
+            Shader::Backend::SPIRV::MeshEmulationPrimitiveWords(mesh.mesh);
         mesh_emulation->max_vertices = mesh.mesh.max_vertices;
         mesh_emulation->vertex_lines = static_cast<u32>(mesh.mesh.vertex_lines.size());
         for (u32 line = 0; line < mesh.mesh.vertex_lines.size(); ++line) {
@@ -2016,11 +2032,12 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 }
             }
             LOG_INFO(Render_Vulkan,
-                     "Mesh emulation #{}: pipeline {:016x}, {} vertices x {} lines, {} triangles "
-                     "per workgroup, output binding {}, task {} (payload {} words), input "
-                     "reads:{}",
+                     "Mesh emulation #{}: pipeline {:016x}, {} vertices x {} lines, {} primitives "
+                     "of {} vertices x {} lines per workgroup, output binding {}, task {} "
+                     "(payload {} words), input reads:{}",
                      count, hash, mesh.mesh.max_vertices, mesh.mesh.vertex_lines.size(),
-                     mesh.mesh.max_primitives, output_binding, has_task,
+                     mesh.mesh.max_primitives, mesh.mesh.PrimitiveVertices(),
+                     mesh.mesh.primitive_lines.size(), output_binding, has_task,
                      mesh_emulation->payload_stride, reads.empty() ? " none" : reads);
         }
     }
