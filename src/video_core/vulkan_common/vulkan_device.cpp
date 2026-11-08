@@ -1712,10 +1712,22 @@ void Device::RemoveUnsuitableExtensions() {
     features.mesh_shader.meshShaderQueries = VK_FALSE;
     extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
     // EDEN_NX2_FORCE_MESH_FALLBACK=1: leave VK_EXT_mesh_shader disabled, so task/mesh draws take
-    // the compute fallback a device without it uses.
-    if (extensions.mesh_shader && std::getenv("EDEN_NX2_FORCE_MESH_FALLBACK") != nullptr) {
-        LOG_WARNING(Render_Vulkan, "EDEN_NX2_FORCE_MESH_FALLBACK: VK_EXT_mesh_shader disabled");
-        extensions.mesh_shader = false;
+    // the compute fallback a device without it uses. AMD drivers lose the device on Ocarina of
+    // Time's mesh pipelines (zortos293/Lichii#289, #672), so they take the fallback by default;
+    // EDEN_NX2_NATIVE_MESH=1 keeps the extension on them.
+    if (extensions.mesh_shader) {
+        const VkDriverId mesh_driver = properties.driver.driverID;
+        const bool amd_mesh_driver = mesh_driver == VK_DRIVER_ID_AMD_PROPRIETARY ||
+                                     mesh_driver == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+                                     mesh_driver == VK_DRIVER_ID_MESA_RADV;
+        if (std::getenv("EDEN_NX2_FORCE_MESH_FALLBACK") != nullptr) {
+            LOG_WARNING(Render_Vulkan, "EDEN_NX2_FORCE_MESH_FALLBACK: VK_EXT_mesh_shader disabled");
+            extensions.mesh_shader = false;
+        } else if (amd_mesh_driver && std::getenv("EDEN_NX2_NATIVE_MESH") == nullptr) {
+            LOG_WARNING(Render_Vulkan, "VK_EXT_mesh_shader disabled on AMD: task/mesh draws use "
+                                       "the compute fallback (EDEN_NX2_NATIVE_MESH=1 keeps it)");
+            extensions.mesh_shader = false;
+        }
     }
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
