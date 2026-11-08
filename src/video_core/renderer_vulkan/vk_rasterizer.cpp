@@ -290,9 +290,8 @@ void RasterizerVulkan::ReadMeshEmulationProbe() {
         const u64 base{u64{group} * probe.block_words};
         const u64 index_base{base + u64{probe.max_vertices} * probe.vertex_lines};
         for (u32 primitive = 0; primitive < probe.max_primitives; ++primitive) {
-            const std::array<u32, 3> indices{word(index_base + primitive * 3),
-                                             word(index_base + primitive * 3 + 1),
-                                             word(index_base + primitive * 3 + 2)};
+            const u64 record{index_base + u64{primitive} * probe.primitive_words};
+            const std::array<u32, 3> indices{word(record), word(record + 1), word(record + 2)};
             if (indices[0] == indices[1] && indices[1] == indices[2]) {
                 ++degenerate;
                 continue;
@@ -723,7 +722,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                 payload, offsets, args, {*arena.counter, 0, sizeof(u32)}, capacity_words);
             mesh_emulation_indirect = {args.buffer, args.offset};
         }
-        if (probe_draw && output.mapped_span.size() >= output.offset + bytes) {
+        // The probe reads triangles: point and line pipelines are not sampled.
+        if (probe_draw && pipeline->MeshEmulation()->primitive_vertices == 3 &&
+            output.mapped_span.size() >= output.offset + bytes) {
             const MeshEmulationSetup& setup{*pipeline->MeshEmulation()};
             mesh_probe = {
                 .data = output.mapped_span.subspan(output.offset, bytes),
@@ -734,6 +735,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                 .vertex_lines = setup.vertex_lines,
                 .max_vertices = setup.max_vertices,
                 .max_primitives = setup.max_primitives,
+                .primitive_words = setup.primitive_words,
                 .position_lines = setup.position_lines,
                 .pending = true,
             };

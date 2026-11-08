@@ -88,6 +88,9 @@ struct RuntimeInfo {
     VaryingState previous_stage_stores;
     /// Fragment stage after a mesh program: generic inputs it writes per primitive.
     std::bitset<32> per_primitive_generics{};
+    /// Fragment stage after an emulated mesh program: per-primitive generics, which the
+    /// emulation's vertex shader writes on every vertex of the primitive, read flat.
+    std::bitset<32> flat_generics{};
     std::map<IR::Attribute, IR::Attribute> previous_stage_legacy_stores_mapping;
 
     bool convert_depth_mode{};

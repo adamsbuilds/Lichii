@@ -50,15 +50,22 @@ constexpr u32 COOPERATIVE_HMMA_TEST_LANE_WORDS = 10;
 /// Mesh emulation without VK_EXT_mesh_shader. The mesh program runs as a compute shader
 /// (RuntimeInfo::mesh_as_compute) that writes one block per workgroup to a u32 storage buffer:
 /// max_vertices * vertex_lines words (vertex v, line l at v * vertex_lines + l), then
-/// max_primitives * 3 vertex indices (0 0 0 past the primitive count, a degenerate triangle).
-[[nodiscard]] inline u32 MeshEmulationBlockWords(const MeshInfo& mesh) {
-    return mesh.max_vertices * static_cast<u32>(mesh.vertex_lines.size()) +
-           mesh.max_primitives * 3;
+/// max_primitives records of MeshEmulationPrimitiveWords: the primitive's vertex indices (zeros
+/// past the primitive count, a degenerate primitive), then its per-primitive generic lines.
+[[nodiscard]] inline u32 MeshEmulationPrimitiveWords(const MeshInfo& mesh) {
+    return mesh.PrimitiveVertices() + static_cast<u32>(mesh.primitive_lines.size());
 }
 
-/// Vertex shader drawing the emulation's output as a triangle list of
-/// groups * max_primitives * 3 vertices, with the mesh program's vertex outputs. With a task
-/// program (args_binding != ~0) the blocks start at the arguments' MESH_EMULATION_ARGS_BASE.
+[[nodiscard]] inline u32 MeshEmulationBlockWords(const MeshInfo& mesh) {
+    return mesh.max_vertices * static_cast<u32>(mesh.vertex_lines.size()) +
+           mesh.max_primitives * MeshEmulationPrimitiveWords(mesh);
+}
+
+/// Vertex shader drawing the emulation's output as a point, line or triangle list of
+/// groups * max_primitives * PrimitiveVertices() vertices, with the mesh program's vertex outputs
+/// and its per-primitive generics written on every vertex of the primitive (the pixel program
+/// reads them flat). With a task program (args_binding != ~0) the blocks start at the arguments'
+/// MESH_EMULATION_ARGS_BASE.
 [[nodiscard]] std::vector<u32> EmitMeshEmulationVertex(const Profile& profile,
                                                        const MeshInfo& mesh, u32 binding,
                                                        u32 args_binding, bool convert_depth);

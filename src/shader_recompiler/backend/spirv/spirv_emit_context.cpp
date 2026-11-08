@@ -1863,6 +1863,10 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             }
             continue;
         }
+        if (runtime_info.flat_generics.test(index)) {
+            Decorate(id, spv::Decoration::Flat);
+            continue;
+        }
         if (is_integer) {
             Decorate(id, spv::Decoration::Flat);
         } else {

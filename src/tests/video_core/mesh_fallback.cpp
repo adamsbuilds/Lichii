@@ -121,6 +121,32 @@ MeshInfo TriangleMesh() {
     return mesh;
 }
 
+// One point of a given size, the shape of Ocarina of Time's point-sprite mesh programs.
+MeshInfo PointMesh() {
+    MeshInfo mesh{TriangleMesh()};
+    mesh.max_vertices = 1;
+    mesh.topology = 0;
+    mesh.vertex_lines.push_back(static_cast<u32>(IR::Attribute::PointSize));
+    return mesh;
+}
+
+// A triangle with a per-primitive generic vec4 (generic 3), read flat by the pixel program.
+MeshInfo PerPrimitiveMesh() {
+    MeshInfo mesh{TriangleMesh()};
+    for (const IR::Attribute attribute : {IR::Attribute::Generic3X, IR::Attribute::Generic3Y,
+                                          IR::Attribute::Generic3Z, IR::Attribute::Generic3W}) {
+        mesh.primitive_lines.push_back(static_cast<u32>(attribute));
+    }
+    return mesh;
+}
+
+bool HasDecoration(const std::vector<u32>& code, spv::Decoration decoration, u32 value) {
+    return std::ranges::any_of(Instructions(code), [&](const Instruction& inst) {
+        return inst.op == spv::Op::OpDecorate && inst.operands.size() >= 3 &&
+               inst.operands[1] == static_cast<u32>(decoration) && inst.operands[2] == value;
+    });
+}
+
 Profile MakeProfile() {
     Profile profile;
     profile.supported_spirv = 0x00010500;
@@ -130,7 +156,8 @@ Profile MakeProfile() {
 // A one-triangle mesh program (or the task program launching it), as the frontend lowers them.
 // With lane_id the mesh program writes its lane as the vertex's first attribute word.
 std::vector<u32> EmitProgram(Stage stage, bool as_compute, bool with_task,
-                             Profile profile = MakeProfile(), bool lane_id = false) {
+                             Profile profile = MakeProfile(), bool lane_id = false,
+                             const MeshInfo& mesh = TriangleMesh()) {
     ObjectPool<IR::Inst> pool;
     IR::Block block{pool};
     IR::Program program;
@@ -140,7 +167,7 @@ std::vector<u32> EmitProgram(Stage stage, bool as_compute, bool with_task,
     program.post_order_blocks = {&block};
     program.syntax_list = {{{.block = &block}, IR::AbstractSyntaxNode::Type::Block},
                            {{}, IR::AbstractSyntaxNode::Type::Return}};
-    program.mesh = TriangleMesh();
+    program.mesh = mesh;
     program.info.is_task = stage == Stage::Task;
     program.info.is_mesh = stage == Stage::Mesh;
     program.info.uses_workgroup_id = true;
@@ -256,4 +283,48 @@ TEST_CASE("Mesh fallback distribution pass binds its buffers and constants",
                inst.operands.size() == 1 + sizeof(SPIRV::MeshEmulationDistributionConstants) / 4;
     })};
     REQUIRE(has_constants);
+}
+
+TEST_CASE("Mesh fallback emits point and per-primitive mesh programs as compute shaders",
+          "[video_core][spirv][mesh_fallback]") {
+    const std::vector<u32> points{
+        EmitProgram(Stage::Mesh, true, false, MakeProfile(), false, PointMesh())};
+    Dump(points, "fallback-mesh-points");
+    RequireNoMeshShading(points);
+    REQUIRE(Bindings(points) == std::vector<u32>{OUTPUT_BINDING});
+
+    const std::vector<u32> per_primitive{
+        EmitProgram(Stage::Mesh, true, false, MakeProfile(), false, PerPrimitiveMesh())};
+    Dump(per_primitive, "fallback-mesh-per-primitive");
+    RequireNoMeshShading(per_primitive);
+    REQUIRE(Bindings(per_primitive) == std::vector<u32>{OUTPUT_BINDING});
+}
+
+TEST_CASE("Mesh fallback block layout keeps a record per primitive",
+          "[video_core][spirv][mesh_fallback]") {
+    REQUIRE(SPIRV::MeshEmulationPrimitiveWords(TriangleMesh()) == 3);
+    REQUIRE(SPIRV::MeshEmulationBlockWords(TriangleMesh()) == 3 * 4 + 3);
+    REQUIRE(SPIRV::MeshEmulationPrimitiveWords(PointMesh()) == 1);
+    REQUIRE(SPIRV::MeshEmulationBlockWords(PointMesh()) == 1 * 5 + 1);
+    REQUIRE(SPIRV::MeshEmulationPrimitiveWords(PerPrimitiveMesh()) == 3 + 4);
+    REQUIRE(SPIRV::MeshEmulationBlockWords(PerPrimitiveMesh()) == 3 * 4 + 7);
+}
+
+TEST_CASE("Mesh fallback vertex shader writes point sizes and per-primitive generics",
+          "[video_core][spirv][mesh_fallback]") {
+    const std::vector<u32> points{
+        SPIRV::EmitMeshEmulationVertex(MakeProfile(), PointMesh(), OUTPUT_BINDING, ~0U, false)};
+    Dump(points, "fallback-vertex-points");
+    REQUIRE(Model(points) == spv::ExecutionModel::Vertex);
+    REQUIRE(HasDecoration(points, spv::Decoration::BuiltIn,
+                          static_cast<u32>(spv::BuiltIn::PointSize)));
+
+    const std::vector<u32> per_primitive{SPIRV::EmitMeshEmulationVertex(
+        MakeProfile(), PerPrimitiveMesh(), OUTPUT_BINDING, ~0U, false)};
+    Dump(per_primitive, "fallback-vertex-per-primitive");
+    REQUIRE(Model(per_primitive) == spv::ExecutionModel::Vertex);
+    REQUIRE(HasDecoration(per_primitive, spv::Decoration::Location, 3));
+    REQUIRE_FALSE(HasDecoration(per_primitive, spv::Decoration::BuiltIn,
+                                static_cast<u32>(spv::BuiltIn::PointSize)));
+    REQUIRE_FALSE(HasCapability(per_primitive, spv::Capability::MeshShadingEXT));
 }
